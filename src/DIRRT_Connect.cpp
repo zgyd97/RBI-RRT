@@ -42,6 +42,78 @@ namespace {
         static thread_local std::normal_distribution<double> distribution(0.0, 1.0);
         return distribution(generator);
     }
+
+    inline double cross(double ax, double ay,
+                        double bx, double by)
+    {
+        return ax * by - ay * bx;
+    }
+
+    inline bool onSegment(double px, double py,
+                        double qx, double qy,
+                        double rx, double ry)
+    {
+        return qx >= std::min(px, rx) && qx <= std::max(px, rx) &&
+            qy >= std::min(py, ry) && qy <= std::max(py, ry);
+    }
+
+    bool segmentsIntersect(double p1x, double p1y,
+                        double p2x, double p2y,
+                        double q1x, double q1y,
+                        double q2x, double q2y)
+    {
+        double d1 = cross(p2x - p1x, p2y - p1y,
+                        q1x - p1x, q1y - p1y);
+        double d2 = cross(p2x - p1x, p2y - p1y,
+                        q2x - p1x, q2y - p1y);
+        double d3 = cross(q2x - q1x, q2y - q1y,
+                        p1x - q1x, p1y - q1y);
+        double d4 = cross(q2x - q1x, q2y - q1y,
+                        p2x - q1x, p2y - q1y);
+
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+            ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
+            return true;
+
+        if (d1 == 0 && onSegment(p1x, p1y, q1x, q1y, p2x, p2y)) return true;
+        if (d2 == 0 && onSegment(p1x, p1y, q2x, q2y, p2x, p2y)) return true;
+        if (d3 == 0 && onSegment(q1x, q1y, p1x, p1y, q2x, q2y)) return true;
+        if (d4 == 0 && onSegment(q1x, q1y, p2x, p2y, q2x, q2y)) return true;
+
+        return false;
+    }
+
+    bool segmentIntersectsRect(double x1, double y1,
+                            double x2, double y2,
+                            double rx, double ry,
+                            double rw, double rh)
+    {
+        // 2. 和矩形四条边相交
+        double left   = rx;
+        double right  = rx + rw;
+        double bottom = ry;
+        double top    = ry + rh;
+
+        // bottom
+        if (segmentsIntersect(x1, y1, x2, y2,
+                            left, bottom, right, bottom))
+            return true;
+        // top
+        if (segmentsIntersect(x1, y1, x2, y2,
+                            left, top, right, top))
+            return true;
+        // left
+        if (segmentsIntersect(x1, y1, x2, y2,
+                            left, bottom, left, top))
+            return true;
+        // right
+        if (segmentsIntersect(x1, y1, x2, y2,
+                            right, bottom, right, top))
+            return true;
+
+        return false;
+    }
+
 }
 
 DIRRT_Connect::DIRRT_Connect()
@@ -196,15 +268,19 @@ bool DIRRT_Connect::isValid(State stat1,State stat2)//collision checking placeho
             py1 - obs.y >= 0.01  && py1 - (obs.y + obs.h)<=0.01 )  {
             return false; // 碰撞
         }
-    }
 
-    for (const auto& obs : obstacles) {
-        // 如果点在矩形障碍物范围内
         if (px2 - obs.x >= 0.01  && px2 - (obs.x + obs.w)<=0.01 &&
-            py2 - obs.y >= 0.01  && py2 - (obs.y + obs.h)<=0.01 ) {
-            return false; // 碰撞
+            py2 - obs.y >= 0.01 && py2 - (obs.y + obs.h)<=0.01 ) {
+            
+                return false; // 碰撞
         }
+
+        if (segmentIntersectsRect(px1, py1, px2, py2,
+                                  obs.x, obs.y,
+                                  obs.w, obs.h))
+            return false;
     }
+    
     return true; // Assume all states are valid for now
 }
 
@@ -355,9 +431,115 @@ void DIRRT_Connect::rewire(rrtNode* x_new, vector<rrtNode*> nearNodes)
     }
 }
 
-void DIRRT_Connect::graidientDescent()
+void DIRRT_Connect::gradientDescent(rrtNode* node)
 {
+    // Placeholder implementation for gradient descent optimization
+    if (!node) return;
 
+    // TODO: Implement gradient descent algorithm
+}
+
+
+void DIRRT_Connect::merge(rrtTree& T1, rrtTree& T2)
+{
+    // solutions: [x_from_start, x_from_goal]
+    if (solutions.size() < 2) return;
+
+    rrtNode* xs = solutions[solutions.size() - 2];
+    rrtNode* xg = solutions[solutions.size() - 1];
+
+    // ===== Step 1: extract path =====
+    std::vector<State> path_states;
+
+    // start side
+    std::vector<State> path_from_start;
+    rrtNode* cur = xs;
+    while (cur)
+    {
+        path_from_start.push_back(cur->state);
+        cur = cur->parent;
+    }
+    std::reverse(path_from_start.begin(), path_from_start.end());
+
+    // goal side (do NOT include connection node twice)
+    std::vector<State> path_from_goal;
+    cur = xg->parent;
+    while (cur)
+    {
+        path_from_goal.push_back(cur->state);
+        cur = cur->parent;
+    }
+
+    path_states = path_from_start;
+    path_states.insert(path_states.end(),
+                       path_from_goal.begin(),
+                       path_from_goal.end());
+
+    // ===== Step 2: rebuild a NEW tree T =====
+    rrtTree mergedTree(DEFAULT_TREE_SIZE);
+
+    rrtNode* prev = nullptr;
+    for (size_t i = 0; i < path_states.size(); ++i)
+    {
+        rrtNode* node = mergedTree.addTreeNode(path_states[i], prev);
+        if (prev)
+        {
+            node->cost = prev->cost +
+                distance(prev->state.values, node->state.values);
+        }
+        else
+        {
+            mergedTree.root = node;
+            node->cost = 0.0;
+        }
+        prev = node;
+    }
+
+    // ===== Step 3: attach remaining nodes (optional but recommended) =====
+    auto attachRemaining = [&](rrtTree& oldTree)
+    {
+        for (auto* oldNode : oldTree.tree)
+        {
+            // skip nodes already on main path
+            bool on_path = false;
+            for (auto* p : mergedTree.tree)
+            {
+                if (distance(p->state.values, oldNode->state.values) < 1e-8)
+                {
+                    on_path = true;
+                    break;
+                }
+            }
+            if (on_path) continue;
+
+            // find nearest in merged tree
+            rrtNode* best = nullptr;
+            double best_dist = INFINITY;
+
+            for (auto* p : mergedTree.tree)
+            {
+                double d = distance(p->state.values, oldNode->state.values);
+                if (d < best_dist && isValid(p->state, oldNode->state))
+                {
+                    best_dist = d;
+                    best = p;
+                }
+            }
+
+            if (best)
+            {
+                rrtNode* newNode =
+                    mergedTree.addTreeNode(oldNode->state, best);
+                newNode->cost = best->cost + best_dist;
+            }
+        }
+    };
+
+    attachRemaining(T1);
+    attachRemaining(T2);
+
+    // ===== Step 4: overwrite T1 with merged tree =====
+    T1 = std::move(mergedTree);
 }
 
 
@@ -366,7 +548,7 @@ void DIRRT_Connect::plan()
     //1.initialize
     bool terminiated = false;
     int max_iter = 1000;
-    double step_size=0.5;
+    double step_size=0.1;
     
     //1.1 create two rrt trees using treeUtils
     rrtTree rrtTree1(10000), rrtTree2(10000);
@@ -382,12 +564,9 @@ void DIRRT_Connect::plan()
     kd_insert(t1, stat_startNode.values.data(), root_start);//insert start node
     kd_insert(t2, stat_goalNode.values.data(), root_goal);//insert goal node
     
+    //2.RRT connect---find first feasible solution
     max_iter = rrtTree1.num_rrtNodes_num;
-    
-    cout<<"max_iter"<<max_iter<<endl;
-    //2.main loop
-    int iter=0;
-    for(iter=0; iter<max_iter; iter++)
+    for(int iter=0; iter<max_iter; iter++)
     {
         //2.1 sample a random node
         State random_node = informed_sample();
@@ -413,15 +592,16 @@ void DIRRT_Connect::plan()
                     reconstructTree(&rrtTree1);
                     reconstructTree(&rrtTree2);
                     isFirstSolution = false;
-                    // break;
+                    break;
                 }
                 swap(rrtTree1, rrtTree2);
                 swap(t1, t2);
             }
         }
     }
-    cout<<"iter: "<<iter;
-    
+    // merge(rrtTree1, rrtTree2);
+
+    /*test merge tree*/
     std::ofstream out1("rrt_tree1.json");
     out1 << serialize(rrtTree1.root);
     out1.close();
@@ -429,6 +609,83 @@ void DIRRT_Connect::plan()
     std::ofstream out2("rrt_tree2.json");
     out2 << serialize(rrtTree2.root);
     out2.close();
+    
+    //3.merge two trees
+    merge(rrtTree1, rrtTree2);
+
+    /*test merge tree*/
+    std::ofstream out1("rrt_tree.json");
+    out1 << serialize(rrtTree1.root);
+    out1.close();
+
+    
+
+/*
+    //4.optimize the path using gd+rewire
+    vector<rrtNode*> knearestNodes;
+    std::vector<double> pos={};
+    // =======================gd==================
+    for(int iter=0; iter<max_iter; iter++)
+    {
+        // cout<<"c_best"<<c_best<<endl;
+        //1.1 sample a random node
+        State random_node = informed_sample();
+        pos = random_node.values;
+        
+        //1.2 find nearestnode
+        kdres* nearest = kd_nearest(t1, random_node.values.data());
+        rrtNode* nearest_rrt_node = nearest ? static_cast<rrtNode*>(kd_res_item_data(nearest)) : nullptr;
+
+        if (!nearest_rrt_node) {
+            if (nearest) kd_res_free(nearest);
+            continue;
+        }
+        kd_res_rewind(nearest);
+        while(!kd_res_end(nearest))
+        {
+            knearestNodes.push_back(static_cast<rrtNode*>(kd_res_item_data(nearest)));
+            kd_res_next(nearest);
+        }
+        
+        //1.3 steer
+        vector<double> stat_nearest = nearest_rrt_node->state.values;
+        vector<double> stat_target_ = random_node.values;
+        State stat_new_node = steer(stat_nearest, stat_target_, step_size);
+        if(!isValid(stat_nearest,stat_new_node)) continue;
+
+        //1.4 optimize
+        chooseParent(knearestNodes, stat_new_node);
+        //1.4.1 add new node to rrt tree
+        rrtNode* new_rrt_node = rrtTree1.addTreeNode(stat_new_node, nearest_rrt_node);
+        //1.4.2 add new node to kdtree
+        kd_insert(t1, stat_new_node.values.data(), new_rrt_node);  
+        
+        // 1.5 deform branch nodes
+        deformInorder(new_rrt_node, rrtTree1.root);
+
+        //1.6 rewire
+        rewire(new_rrt_node, knearestNodes);
+
+        if(distance(stat_new_node.values, stat_goalNode.values) < 1e-6 && c_best>rrtTree1.tree[rrtTree1.valid_start_tree_node_nums-1]->cost + rrtTree2.tree[rrtTree2.valid_start_tree_node_nums-1]->cost){
+            //record pair of solution nodes
+            solutions.push_back(rrtTree1.tree[rrtTree1.valid_start_tree_node_nums-1]);
+            solutions.push_back(rrtTree2.tree[rrtTree2.valid_start_tree_node_nums-1]);
+            rrtNode* nearest_rrt_node = nearest ? static_cast<rrtNode*>(kd_res_item_data(nearest)) : nullptr;
+        
+            //update c_best
+            c_best = min(c_best, rrtTree1.tree[rrtTree1.valid_start_tree_node_nums-1]->cost + rrtTree2.tree[rrtTree2.valid_start_tree_node_nums-1]->cost);
+            cout<<"solution found,"<<"cost: "<<c_best<<endl;
+        }
+    }
+    std::ofstream out1("rrt_tree1.json");
+    out1 << serialize(rrtTree1.root);
+    out1.close();
+
+    std::ofstream out2("rrt_tree2.json");
+    out2 << serialize(rrtTree2.root);
+    out2.close();
+    cout<<"planning finished."<<endl;
+*/
 }
 
 vector<rrtNode*> DIRRT_Connect::getSolutionPath()
@@ -478,6 +735,33 @@ string DIRRT_Connect::serialize(rrtNode* root)
     }
     s += "]}";
     return s;
+}
+
+/*
+deform必须从rootdeformnode开始
+每一次节点deform，只会影响该节点往后的子树结构
+*/
+void  DIRRT_Connect::deformInorder(rrtNode* deforming_node, rrtNode* goal_node)
+{
+    rrtNode* root_deforming_node(deforming_node);
+    while(deforming_node!=goal_node)
+    {
+        root_deforming_node = deforming_node;
+        deforming_node = deforming_node->parent;
+    }
+    queue<rrtNode*> que;
+    que.push(root_deforming_node);
+    while(!que.empty())
+    {
+        rrtNode* node = que.front();
+        gradientDescent(node);
+        que.pop();       
+        for (const auto &child : node->children)
+        {
+            if (!child->children.empty())
+                que.push(child);
+        }
+    }
 }
 
 

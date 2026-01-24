@@ -6,6 +6,8 @@
 #include <random>
 #include <fstream>
 #include "treeUtils.hpp"
+#include <Eigen/Eigen>
+#include <queue>
 using namespace std;
 
 class DIRRT_Connect
@@ -72,7 +74,8 @@ public:
 
 
     //core functions
-    void graidientDescent();
+    void gradientDescent(rrtNode* node);
+    void deformNodes();
     void rewire(rrtNode* x_new, vector<rrtNode*> nearNodes);
     rrtNode* chooseParent(vector<rrtNode*> nearNodes, State newState);
     ExtendResult extend(rrtTree* tree, kdtree* tree_kd, State stat_target,double step_size);// one step //ok
@@ -82,4 +85,6 @@ public:
     vector<rrtNode*> getSolutionPath();
     void getTreePath();
     string serialize(rrtNode* root);
+    void deformInorder(rrtNode* deforming_node, rrtNode* goal_node);
+    void merge(rrtTree& tree1, rrtTree& tree2);
 };
